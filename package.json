@@ -1,6 +1,6 @@
 {
   "name": "ace-launcher",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ace Launcher - Modern Minecraft Java Launcher",
   "author": "ted16",
   "main": "electron/main.js",
