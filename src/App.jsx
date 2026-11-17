@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState('store'); // 'create' | 'store' | 'settings'
   const [versions, setVersions] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [selectedProfile, setSelectedProfile] = useState(null);
@@ -15,7 +16,20 @@ export default function App() {
   const [loadingLoaders, setLoadingLoaders] = useState(false);
   const [ram, setRam] = useState(4);
 
-  // Durum / Log
+  // Mağaza (Modrinth & CurseForge)
+  const [platform, setPlatform] = useState('modrinth'); // 'modrinth' | 'curseforge'
+  const [projectType, setProjectType] = useState('mod'); // 'mod' | 'shader' | 'resourcepack' | 'modpack'
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [installingId, setInstallingId] = useState(null);
+  const [storeNotice, setStoreNotice] = useState('');
+
+  // Ayarlar (CurseForge API Key)
+  const [cfApiKey, setCfApiKey] = useState('');
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // Oyun Durum / Log
   const [status, setStatus] = useState('Hazır');
   const [isLaunching, setIsLaunching] = useState(false);
 
@@ -23,6 +37,7 @@ export default function App() {
     loadInitialData();
 
     window.mcAPI.onStatus((msg) => setStatus(msg));
+    window.mcAPI.onInstallProgress((msg) => setStoreNotice(msg));
     window.mcAPI.onProgress((p) => {
       setStatus(`İndiriliyor (${p.type}): ${p.task} / ${p.total}`);
     });
@@ -35,7 +50,6 @@ export default function App() {
     });
   }, []);
 
-  // Sürüm veya Loader değiştiğinde alt sürümleri çek
   useEffect(() => {
     if (loader === 'vanilla') {
       setLoaderVersions([]);
@@ -44,6 +58,13 @@ export default function App() {
     }
     fetchLoaderVersions();
   }, [loader, version]);
+
+  // Mağaza sekmesi açıkken platform, tür veya profil değiştiğinde otomatik ara
+  useEffect(() => {
+    if (activeTab === 'store' && selectedProfile) {
+      handleSearch();
+    }
+  }, [activeTab, platform, projectType, selectedProfile]);
 
   async function fetchLoaderVersions() {
     setLoadingLoaders(true);
@@ -59,14 +80,20 @@ export default function App() {
   }
 
   async function loadInitialData() {
-    const [vers, profs] = await Promise.all([
+    const [vers, profs, cfg] = await Promise.all([
       window.mcAPI.getVersions(),
       window.mcAPI.getProfiles(),
+      window.mcAPI.getConfig(),
     ]);
     setVersions(vers);
     if (vers.length > 0) setVersion(vers[0].id);
     setProfiles(profs);
-    if (profs.length > 0) setSelectedProfile(profs[0]);
+    if (profs.length > 0) {
+      setSelectedProfile(profs[0]);
+    } else {
+      setActiveTab('create');
+    }
+    if (cfg?.curseforgeApiKey) setCfApiKey(cfg.curseforgeApiKey);
   }
 
   async function handleCreateProfile(e) {
@@ -85,6 +112,7 @@ export default function App() {
     setProfiles(updated);
     setSelectedProfile(created);
     setName('');
+    setActiveTab('store');
   }
 
   async function handleDeleteProfile(e, id) {
@@ -94,6 +122,52 @@ export default function App() {
     if (selectedProfile?.id === id) {
       setSelectedProfile(updated[0] || null);
     }
+  }
+
+  async function handleSearch(e) {
+    if (e) e.preventDefault();
+    if (!selectedProfile) return;
+    setIsSearching(true);
+    setStoreNotice('');
+    const res = await window.mcAPI.searchContent({
+      platform,
+      query: searchQuery,
+      projectType,
+      mcVersion: selectedProfile.version,
+      loader: selectedProfile.loader,
+    });
+    if (res.status === 'ok') {
+      setSearchResults(res.results);
+    } else {
+      setSearchResults([]);
+      setStoreNotice(`Hata: ${res.message}`);
+    }
+    setIsSearching(false);
+  }
+
+  async function handleInstall(item) {
+    if (!selectedProfile || installingId) return;
+    setInstallingId(item.id);
+    setStoreNotice(`${item.title} indiriliyor...`);
+    const res = await window.mcAPI.installContent({
+      platform: item.platform,
+      projectId: item.id,
+      projectType: item.projectType,
+      profile: selectedProfile,
+    });
+    if (res.status === 'ok') {
+      setStoreNotice(`✅ ${res.message}`);
+    } else {
+      setStoreNotice(`❌ Hata: ${res.message}`);
+    }
+    setInstallingId(null);
+  }
+
+  async function handleSaveSettings(e) {
+    e.preventDefault();
+    await window.mcAPI.saveConfig({ curseforgeApiKey: cfApiKey.trim() });
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2500);
   }
 
   async function handlePlay() {
@@ -117,7 +191,7 @@ export default function App() {
               ACE LAUNCHER
             </h1>
             <span className="text-[10px] bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded">
-              v0.2
+              v0.3
             </span>
           </div>
 
@@ -131,8 +205,17 @@ export default function App() {
             />
           </div>
 
-          <h2 className="text-xs font-semibold uppercase text-zinc-500 mb-2">Profiller</h2>
-          <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-xs font-semibold uppercase text-zinc-500">Profiller</h2>
+            <button
+              onClick={() => setActiveTab('create')}
+              className="text-xs text-emerald-400 hover:text-emerald-300 font-medium"
+            >
+              + Yeni Profil
+            </button>
+          </div>
+
+          <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
             {profiles.length === 0 && (
               <p className="text-xs text-zinc-500">Henüz profil yok, sağdan oluştur.</p>
             )}
@@ -152,13 +235,25 @@ export default function App() {
                     {p.version} • {p.loader} • {p.ram}GB
                   </div>
                 </div>
-                <button
-                  onClick={(e) => handleDeleteProfile(e, p.id)}
-                  title="Profili Sil"
-                  className="opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-red-400 text-xs px-1.5 py-0.5 transition"
-                >
-                  ✕
-                </button>
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.mcAPI.openProfileFolder(p.gameDir);
+                    }}
+                    title="Klasörü Aç"
+                    className="text-zinc-400 hover:text-white text-xs px-1"
+                  >
+                    📁
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteProfile(e, p.id)}
+                    title="Profili Sil"
+                    className="text-zinc-500 hover:text-red-400 text-xs px-1"
+                  >
+                    ✕
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -177,110 +272,332 @@ export default function App() {
         </div>
       </aside>
 
-      {/* Sağ Ana Ekran: Yeni Profil Oluşturma */}
-      <main className="flex-1 p-8 overflow-y-auto">
-        <div className="max-w-lg bg-zinc-900 border border-zinc-800 rounded-xl p-6">
-          <h2 className="text-lg font-semibold mb-4">Yeni Profil Oluştur</h2>
-          <form onSubmit={handleCreateProfile} className="space-y-4">
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">Profil Adı</label>
-              <input
-                type="text"
-                placeholder="Örn: Fabric Optimizasyon 1.21.4"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
-              />
-            </div>
+      {/* Sağ Ana Ekran */}
+      <main className="flex-1 flex flex-col overflow-hidden">
+        {/* Üst Navigasyon Sekmeleri */}
+        <header className="h-14 border-b border-zinc-800 bg-zinc-900/50 px-6 flex items-center justify-between">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setActiveTab('store')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition ${
+                activeTab === 'store'
+                  ? 'bg-emerald-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              İçerik Mağazası
+            </button>
+            <button
+              onClick={() => setActiveTab('create')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition ${
+                activeTab === 'create'
+                  ? 'bg-emerald-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              Profil Oluştur
+            </button>
+            <button
+              onClick={() => setActiveTab('settings')}
+              className={`px-3 py-1.5 rounded text-sm font-medium transition ${
+                activeTab === 'settings'
+                  ? 'bg-emerald-500 text-zinc-950'
+                  : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
+              }`}
+            >
+              Ayarlar
+            </button>
+          </div>
 
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">Minecraft Sürümü</label>
-              <select
-                value={version}
-                onChange={(e) => setVersion(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
-              >
-                {versions.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.id}
-                  </option>
-                ))}
-              </select>
+          {selectedProfile && (
+            <div className="text-xs text-zinc-400">
+              Aktif Profil:{' '}
+              <span className="text-emerald-400 font-semibold">
+                {selectedProfile.name} ({selectedProfile.version} - {selectedProfile.loader})
+              </span>
             </div>
+          )}
+        </header>
 
-            {/* Mod Loader Seçimi */}
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">Mod Loader</label>
-              <div className="grid grid-cols-3 gap-2">
-                {['vanilla', 'fabric', 'forge'].map((type) => (
-                  <button
-                    type="button"
-                    key={type}
-                    onClick={() => setLoader(type)}
-                    className={`py-2 rounded text-sm font-medium capitalize border transition ${
-                      loader === type
-                        ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
-                        : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
-                    }`}
-                  >
-                    {type}
-                  </button>
-                ))}
+        {/* SEKME 1: İÇERİK MAĞAZASI */}
+        {activeTab === 'store' && (
+          <div className="flex-1 p-6 overflow-y-auto space-y-4">
+            {!selectedProfile ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 text-center">
+                <p className="text-zinc-400 text-sm mb-3">
+                  Mod, shader veya paket kurmak için önce bir profil seçmeli ya da oluşturmalısın.
+                </p>
+                <button
+                  onClick={() => setActiveTab('create')}
+                  className="px-4 py-2 bg-emerald-500 text-zinc-950 font-semibold rounded text-sm"
+                >
+                  Profil Oluştur
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                {/* Platform ve Kategori Seçiciler */}
+                <div className="flex flex-wrap items-center justify-between gap-3 bg-zinc-900 border border-zinc-800 p-3 rounded-xl">
+                  <div className="flex gap-1.5">
+                    <button
+                      onClick={() => setPlatform('modrinth')}
+                      className={`px-3 py-1.5 rounded text-xs font-semibold transition ${
+                        platform === 'modrinth'
+                          ? 'bg-green-500/20 text-green-400 border border-green-500/50'
+                          : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      Modrinth
+                    </button>
+                    <button
+                      onClick={() => setPlatform('curseforge')}
+                      className={`px-3 py-1.5 rounded text-xs font-semibold transition ${
+                        platform === 'curseforge'
+                          ? 'bg-orange-500/20 text-orange-400 border border-orange-500/50'
+                          : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      CurseForge
+                    </button>
+                  </div>
 
-            {/* Fabric / Forge Sürüm Seçimi */}
-            {loader !== 'vanilla' && (
-              <div>
-                <label className="block text-sm text-zinc-400 mb-1 capitalize">
-                  {loader} Sürümü
-                </label>
-                {loadingLoaders ? (
-                  <p className="text-xs text-zinc-500 py-2">Sürümler yükleniyor...</p>
-                ) : loaderVersions.length === 0 ? (
-                  <p className="text-xs text-red-400 py-2">
-                    Bu Minecraft sürümü için {loader} bulunamadı.
+                  <div className="flex gap-1.5">
+                    {[
+                      { id: 'mod', label: 'Modlar' },
+                      { id: 'shader', label: 'Shader' },
+                      { id: 'resourcepack', label: 'Kaynak Paketi' },
+                      { id: 'modpack', label: 'Modpack' },
+                    ].map((cat) => (
+                      <button
+                        key={cat.id}
+                        onClick={() => setProjectType(cat.id)}
+                        className={`px-3 py-1.5 rounded text-xs font-medium transition ${
+                          projectType === cat.id
+                            ? 'bg-zinc-100 text-zinc-950'
+                            : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Arama Çubuğu */}
+                <form onSubmit={handleSearch} className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder={`${platform === 'modrinth' ? 'Modrinth' : 'CurseForge'} üzerinde ara (Örn: Sodium, BSL, Cobblemon)...`}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-4 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                  <button
+                    type="submit"
+                    className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-sm transition"
+                  >
+                    Ara
+                  </button>
+                </form>
+
+                {storeNotice && (
+                  <div className="bg-zinc-900 border border-zinc-700 text-xs text-emerald-300 px-4 py-2.5 rounded-lg">
+                    {storeNotice}
+                  </div>
+                )}
+
+                {/* Sonuç Listesi */}
+                {isSearching ? (
+                  <p className="text-sm text-zinc-400 py-8 text-center">Aranıyor...</p>
+                ) : searchResults.length === 0 ? (
+                  <p className="text-sm text-zinc-500 py-8 text-center">
+                    Sonuç bulunamadı veya henüz arama yapılmadı.
                   </p>
                 ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {searchResults.map((item) => (
+                      <div
+                        key={`${item.platform}-${item.id}`}
+                        className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-start justify-between gap-3"
+                      >
+                        <div className="flex items-start gap-3 overflow-hidden">
+                          {item.iconUrl ? (
+                            <img
+                              src={item.iconUrl}
+                              alt=""
+                              className="w-12 h-12 rounded-lg object-cover bg-zinc-950 shrink-0"
+                            />
+                          ) : (
+                            <div className="w-12 h-12 rounded-lg bg-zinc-800 shrink-0" />
+                          )}
+                          <div className="overflow-hidden">
+                            <h3 className="font-semibold text-sm truncate">{item.title}</h3>
+                            <p className="text-[11px] text-zinc-500 mb-1">
+                              {item.author} • {Math.round(item.downloads / 1000)}K indirme
+                            </p>
+                            <p className="text-xs text-zinc-400 line-clamp-2">
+                              {item.description}
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => handleInstall(item)}
+                          disabled={installingId !== null}
+                          className="shrink-0 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-zinc-950 border border-emerald-500/40 rounded-lg text-xs font-semibold transition disabled:opacity-50"
+                        >
+                          {installingId === item.id ? 'Kuruluyor...' : 'Kur'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* SEKME 2: PROFİL OLUŞTUR */}
+        {activeTab === 'create' && (
+          <div className="flex-1 p-8 overflow-y-auto">
+            <div className="max-w-lg bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+              <h2 className="text-lg font-semibold mb-4">Yeni Profil Oluştur</h2>
+              <form onSubmit={handleCreateProfile} className="space-y-4">
+                <div>
+                  <label className="block text-sm text-zinc-400 mb-1">Profil Adı</label>
+                  <input
+                    type="text"
+                    placeholder="Örn: Fabric Optimizasyon 1.21.4"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm text-zinc-400 mb-1">Minecraft Sürümü</label>
                   <select
-                    value={selectedLoaderVersion}
-                    onChange={(e) => setSelectedLoaderVersion(e.target.value)}
+                    value={version}
+                    onChange={(e) => setVersion(e.target.value)}
                     className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
                   >
-                    {loaderVersions.map((lv) => (
-                      <option
-                        key={lv.id}
-                        value={loader === 'forge' ? lv.fullVersion : lv.id}
-                      >
-                        {lv.id} {lv.stable ? '(Önerilen)' : ''}
+                    {versions.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.id}
                       </option>
                     ))}
                   </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm text-zinc-400 mb-1">Mod Loader</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {['vanilla', 'fabric', 'forge'].map((type) => (
+                      <button
+                        type="button"
+                        key={type}
+                        onClick={() => setLoader(type)}
+                        className={`py-2 rounded text-sm font-medium capitalize border transition ${
+                          loader === type
+                            ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300'
+                            : 'bg-zinc-950 border-zinc-800 text-zinc-400 hover:bg-zinc-800'
+                        }`}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {loader !== 'vanilla' && (
+                  <div>
+                    <label className="block text-sm text-zinc-400 mb-1 capitalize">
+                      {loader} Sürümü
+                    </label>
+                    {loadingLoaders ? (
+                      <p className="text-xs text-zinc-500 py-2">Sürümler yükleniyor...</p>
+                    ) : loaderVersions.length === 0 ? (
+                      <p className="text-xs text-red-400 py-2">
+                        Bu Minecraft sürümü için {loader} bulunamadı.
+                      </p>
+                    ) : (
+                      <select
+                        value={selectedLoaderVersion}
+                        onChange={(e) => setSelectedLoaderVersion(e.target.value)}
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                      >
+                        {loaderVersions.map((lv) => (
+                          <option
+                            key={lv.id}
+                            value={loader === 'forge' ? lv.fullVersion : lv.id}
+                          >
+                            {lv.id} {lv.stable ? '(Önerilen)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
                 )}
-              </div>
-            )}
 
-            <div>
-              <label className="block text-sm text-zinc-400 mb-1">RAM Miktarı (GB)</label>
-              <input
-                type="number"
-                min="1"
-                max="16"
-                value={ram}
-                onChange={(e) => setRam(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
-              />
+                <div>
+                  <label className="block text-sm text-zinc-400 mb-1">RAM Miktarı (GB)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="16"
+                    value={ram}
+                    onChange={(e) => setRam(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loader !== 'vanilla' && !selectedLoaderVersion}
+                  className="px-4 py-2 bg-zinc-100 text-zinc-950 font-medium rounded text-sm hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 transition"
+                >
+                  Profili Kaydet
+                </button>
+              </form>
             </div>
+          </div>
+        )}
 
-            <button
-              type="submit"
-              disabled={loader !== 'vanilla' && !selectedLoaderVersion}
-              className="px-4 py-2 bg-zinc-100 text-zinc-950 font-medium rounded text-sm hover:bg-white disabled:bg-zinc-800 disabled:text-zinc-500 transition"
-            >
-              Profili Kaydet
-            </button>
-          </form>
-        </div>
+        {/* SEKME 3: AYARLAR */}
+        {activeTab === 'settings' && (
+          <div className="flex-1 p-8 overflow-y-auto">
+            <div className="max-w-lg bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+              <h2 className="text-lg font-semibold mb-2">API Ayarları</h2>
+              <p className="text-xs text-zinc-400 mb-4">
+                Modrinth anahtarsız çalışır. CurseForge üzerinden mod ve paket indirmek için
+                CurseForge for Studios panelinden ücretsiz API Key alıp aşağıya kaydedebilirsin.
+              </p>
+              <form onSubmit={handleSaveSettings} className="space-y-4">
+                <div>
+                  <label className="block text-sm text-zinc-400 mb-1">CurseForge API Key</label>
+                  <input
+                    type="password"
+                    placeholder="$2a$10$..."
+                    value={cfApiKey}
+                    onChange={(e) => setCfApiKey(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-emerald-500 text-zinc-950 font-semibold rounded text-sm hover:bg-emerald-400 transition"
+                  >
+                    Kaydet
+                  </button>
+                  {settingsSaved && (
+                    <span className="text-xs text-emerald-400">✅ Ayarlar kaydedildi!</span>
+                  )}
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
