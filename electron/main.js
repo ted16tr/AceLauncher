@@ -4,11 +4,16 @@ const { Client, Authenticator } = require('minecraft-launcher-core');
 const axios = require('axios');
 const fs = require('fs-extra');
 const { v4: uuidv4 } = require('uuid');
+const {
+  getFabricVersions,
+  getForgeVersions,
+  installFabric,
+  downloadForgeInstaller,
+} = require('./services/modloaders');
 
 const launcher = new Client();
 let mainWindow;
 
-// Ace Launcher veri klasörü (%appdata%/.ace-launcher)
 const BASE_DIR = path.join(app.getPath('appData'), '.ace-launcher');
 const PROFILES_FILE = path.join(BASE_DIR, 'profiles.json');
 
@@ -22,12 +27,13 @@ async function ensureDirs() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 700,
-    minWidth: 900,
-    minHeight: 600,
+    width: 1120,
+    height: 720,
+    minWidth: 920,
+    minHeight: 620,
     title: 'Ace Launcher',
     backgroundColor: '#09090b',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -54,19 +60,22 @@ app.on('window-all-closed', () => {
 
 // --- IPC HANDLERS ---
 
-// Mojang resmi ana sürüm listesini çek
 ipcMain.handle('get-versions', async () => {
   const res = await axios.get('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json');
   return res.data.versions.filter((v) => v.type === 'release');
 });
 
-// Profilleri getir
+ipcMain.handle('get-loader-versions', async (_, { loader, mcVersion }) => {
+  if (loader === 'fabric') return await getFabricVersions(mcVersion);
+  if (loader === 'forge') return await getForgeVersions(mcVersion);
+  return [];
+});
+
 ipcMain.handle('get-profiles', async () => {
   return await fs.readJson(PROFILES_FILE);
 });
 
-// Yeni profil oluştur
-ipcMain.handle('create-profile', async (_, { name, version, loader, ram }) => {
+ipcMain.handle('create-profile', async (_, { name, version, loader, loaderVersion, ram }) => {
   const profiles = await fs.readJson(PROFILES_FILE);
   const id = uuidv4();
   const gameDir = path.join(BASE_DIR, 'instances', id);
@@ -77,6 +86,7 @@ ipcMain.handle('create-profile', async (_, { name, version, loader, ram }) => {
     name,
     version,
     loader: loader || 'vanilla',
+    loaderVersion: loaderVersion || null,
     ram: ram || 4,
     gameDir,
     createdAt: new Date().toISOString(),
@@ -87,37 +97,66 @@ ipcMain.handle('create-profile', async (_, { name, version, loader, ram }) => {
   return newProfile;
 });
 
-// Oyunu başlat (Aşama 1: Vanilla Offline)
+ipcMain.handle('delete-profile', async (_, profileId) => {
+  const profiles = await fs.readJson(PROFILES_FILE);
+  const target = profiles.find((p) => p.id === profileId);
+  if (target && (await fs.pathExists(target.gameDir))) {
+    await fs.remove(target.gameDir);
+  }
+  const updated = profiles.filter((p) => p.id !== profileId);
+  await fs.writeJson(PROFILES_FILE, updated, { spaces: 2 });
+  return updated;
+});
+
 ipcMain.handle('launch-game', async (_, { profile, username }) => {
-  const opts = {
-    authorization: Authenticator.getAuth(username || 'Player'),
-    root: profile.gameDir,
-    version: {
-      number: profile.version,
-      type: 'release',
-    },
-    memory: {
-      max: `${profile.ram}G`,
-      min: '1G',
-    },
-  };
+  try {
+    const opts = {
+      authorization: Authenticator.getAuth(username || 'Player'),
+      root: profile.gameDir,
+      version: {
+        number: profile.version,
+        type: 'release',
+      },
+      memory: {
+        max: `${profile.ram}G`,
+        min: '1G',
+      },
+    };
 
-  launcher.removeAllListeners('progress');
-  launcher.removeAllListeners('data');
-  launcher.removeAllListeners('close');
+    // Fabric seçiliyse önce profile JSON'unu kur ve custom versiyon olarak göster
+    if (profile.loader === 'fabric' && profile.loaderVersion) {
+      mainWindow.webContents.send('launch-status', 'Fabric yapılandırılıyor...');
+      const customId = await installFabric(profile.gameDir, profile.version, profile.loaderVersion);
+      opts.version.custom = customId;
+    }
 
-  launcher.on('progress', (e) => {
-    mainWindow.webContents.send('launch-progress', e);
-  });
+    // Forge seçiliyse installer jar'ını indir ve MCLC forge parametresine ver
+    if (profile.loader === 'forge' && profile.loaderVersion) {
+      mainWindow.webContents.send('launch-status', 'Forge installer indiriliyor...');
+      const forgeJarPath = await downloadForgeInstaller(profile.gameDir, profile.loaderVersion);
+      opts.forge = forgeJarPath;
+    }
 
-  launcher.on('data', (e) => {
-    mainWindow.webContents.send('launch-log', e);
-  });
+    launcher.removeAllListeners('progress');
+    launcher.removeAllListeners('data');
+    launcher.removeAllListeners('close');
 
-  launcher.on('close', (code) => {
-    mainWindow.webContents.send('launch-close', code);
-  });
+    launcher.on('progress', (e) => {
+      mainWindow.webContents.send('launch-progress', e);
+    });
 
-  launcher.launch(opts);
-  return { status: 'started' };
+    launcher.on('data', (e) => {
+      mainWindow.webContents.send('launch-log', e);
+    });
+
+    launcher.on('close', (code) => {
+      mainWindow.webContents.send('launch-close', code);
+    });
+
+    launcher.launch(opts);
+    return { status: 'started' };
+  } catch (err) {
+    mainWindow.webContents.send('launch-close', 1);
+    return { status: 'error', message: err.message };
+  }
 });
